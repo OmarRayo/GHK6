@@ -1,0 +1,56 @@
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+  vus: 5,           // Pocos VUs para prueba local
+  duration: '5m',   // 5 minutos — suficiente para ver 4-5 renovaciones
+};
+
+let authToken = null;
+let tokenTimestamp = null;
+
+const TOKEN_LIFETIME_MS = 60 * 1000;     // 1 minuto (simulando la 1 hora real)
+const RENEWAL_MARGIN_MS = 10 * 1000;     // Renovar 10s antes de vencer
+
+function login() {
+  const res = http.post('https://dummyjson.com/auth/login', JSON.stringify({
+    username: 'emilys',
+    password: 'emilyspass',
+    expiresInMins: 1,  // Token expira en 1 minuto real
+  }), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  const success = check(res, { 'login successful': (r) => r.status === 200 });
+  if (!success) {
+    console.error(`Login failed: ${res.status} - ${res.body}`);
+    return;
+  }
+
+  authToken = res.json('accessToken');
+  tokenTimestamp = Date.now();
+  console.log(`[VU ${__VU}] New token acquired at ${new Date(tokenTimestamp).toISOString()}`);
+}
+
+function needsRenewal() {
+  if (!authToken || !tokenTimestamp) return true;
+  const elapsed = Date.now() - tokenTimestamp;
+  return elapsed >= (TOKEN_LIFETIME_MS - RENEWAL_MARGIN_MS);
+}
+
+export default function () {
+  if (needsRenewal()) {
+    login();
+  }
+
+  const res = http.get('https://dummyjson.com/auth/me', {
+    headers: { Authorization: `Bearer ${authToken}` },
+  });
+
+  const ok = check(res, { 'authenticated request succeeded': (r) => r.status === 200 });
+  if (!ok) {
+    console.error(`[VU ${__VU}] Auth failed: ${res.status} - ${res.body}`);
+  }
+
+  sleep(5); // Cada VU hace una request cada 5 segundos
+}
